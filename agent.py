@@ -63,13 +63,12 @@ def parse_action_input(tool_name: str, input_str: str):
             
     return input_str
 
-async def call_local_llm(prompt: str, model_name: str) -> str:
-    """Calls Ollama non-streaming endpoint to get the next agent step."""
-    url = "http://localhost:11434/api/generate"
+async def call_local_chat_llm(messages: list, model_name: str) -> str:
+    """Calls Ollama chat endpoint to get the next agent step."""
+    url = "http://localhost:11434/api/chat"
     payload = {
         "model": model_name,
-        "prompt": prompt,
-        "system": SYSTEM_PROMPT,
+        "messages": messages,
         "stream": False,
         "options": {
             "temperature": 0.1  # Low temperature for consistent tool calling
@@ -84,7 +83,7 @@ async def call_local_llm(prompt: str, model_name: str) -> str:
             lambda: requests.post(url, json=payload, timeout=45)
         )
         if response.status_code == 200:
-            return response.json().get("response", "")
+            return response.json().get("message", {}).get("content", "")
         else:
             return f"Error: Local LLM API returned HTTP {response.status_code}"
     except Exception as e:
@@ -92,29 +91,35 @@ async def call_local_llm(prompt: str, model_name: str) -> str:
 
 async def run_agent(query: str, chat_history: list, websocket, model_name: str = "llama3"):
     """
-    Runs the ReAct loop. Sends status updates and streaming final answer 
+    Runs the ReAct loop using the chat API. Sends status updates and streaming final answer 
     tokens over the WebSocket connection.
     """
-    # 1. Construct the prompt with conversation history and the agent trajectory
-    history_context = ""
+    # 1. Start with system prompt
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT}
+    ]
+    
+    # 2. Append conversation history (from previous turns)
     for msg in chat_history[-6:]:  # Limit history to last 6 messages
-        role = "User" if msg["role"] == "user" else "Assistant"
-        history_context += f"{role}: {msg['content']}\n"
+        messages.append({"role": msg["role"], "content": msg["content"]})
         
-    trajectory = f"\nUser Query: {query}\n"
+    # 3. Append current user query
+    messages.append({"role": "user", "content": query})
     
     max_steps = 5
     step = 0
     
+    # Copy messages to represent the current execution trajectory
+    agent_messages = list(messages)
+    
     while step < max_steps:
         step += 1
-        full_prompt = f"{history_context}{trajectory}"
         
         # Notify user that LLM is thinking
         await websocket.send_json({"type": "status", "content": "Thinking..."})
         
         # Get LLM response for this step
-        llm_response = await call_local_llm(full_prompt, model_name)
+        llm_response = await call_local_chat_llm(agent_messages, model_name)
         print(f"--- Step {step} LLM Output ---\n{llm_response}\n----------------------")
         
         # Parse Thought
@@ -152,10 +157,13 @@ async def run_agent(query: str, chat_history: list, websocket, model_name: str =
             else:
                 observation = f"Error: Tool '{tool_name}' is not recognized."
                 
-            # Log observation in console and append to agent trajectory
+            # Log observation in console
             print(f"--- Step {step} Tool Result ({tool_name}) ---\n{observation[:200]}...\n----------------------")
             
-            trajectory += f"\nThought: {thought_text}\nAction: {tool_name}\nAction Input: {tool_input_raw}\nObservation: {observation}\n"
+            # Feed current step response and observation back to model
+            agent_messages.append({"role": "assistant", "content": llm_response})
+            agent_messages.append({"role": "user", "content": f"Observation: {observation}"})
+            
             await asyncio.sleep(0.5)  # Short delay for visual effect in UI
             
         # Check if the LLM outputted a final Answer
@@ -170,7 +178,7 @@ async def run_agent(query: str, chat_history: list, websocket, model_name: str =
             for i, word in enumerate(words):
                 space = " " if i > 0 else ""
                 await websocket.send_json({"type": "token", "content": space + word})
-                await asyncio.sleep(0.03)  # Adjust speed of streaming
+                await asyncio.sleep(0.02)  # Adjust speed of streaming
                 
             return answer_part
         else:
@@ -183,7 +191,7 @@ async def run_agent(query: str, chat_history: list, websocket, model_name: str =
             for i, word in enumerate(words):
                 space = " " if i > 0 else ""
                 await websocket.send_json({"type": "token", "content": space + word})
-                await asyncio.sleep(0.03)
+                await asyncio.sleep(0.02)
                 
             return clean_response
             
