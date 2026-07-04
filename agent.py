@@ -173,34 +173,43 @@ async def run_agent(query: str, chat_history: list, websocket, model_name: str =
             
             await asyncio.sleep(0.5)  # Short delay for visual effect in UI
             
-        # Check if the LLM outputted a final Answer
-        elif "Answer:" in llm_response:
-            answer_part = llm_response.split("Answer:")[-1].strip()
-            
-            # Stream the final answer token-by-token (simulated for smooth UI rendering)
+        # If the LLM did not choose to run a tool, extract the final response and exit
+        else:
             await websocket.send_json({"type": "status", "content": "Complete!"})
             
-            # Split by words to stream nicely
-            words = answer_part.split(" ")
-            for i, word in enumerate(words):
-                space = " " if i > 0 else ""
-                await websocket.send_json({"type": "token", "content": space + word})
-                await asyncio.sleep(0.02)  # Adjust speed of streaming
+            # 1. Look for the "Answer:" prefix
+            if "Answer:" in llm_response:
+                answer_part = llm_response.split("Answer:")[-1].strip()
+            else:
+                # 2. Failsafe line filtering if "Answer:" is missing but response text exists
+                lines = llm_response.split("\n")
+                clean_lines = []
+                for line in lines:
+                    # Skip ReAct format lines
+                    if re.match(r"^(Thought|Action|Action Input):\s*", line, re.IGNORECASE):
+                        continue
+                    # Skip lines that are just "None" / null
+                    if line.strip().lower() in ["none", "none.", "none (no need to use a tool)", "null"]:
+                        continue
+                    clean_lines.append(line)
                 
-            return answer_part
-        else:
-            # Fallback if LLM output didn't follow formatting rules
-            await websocket.send_json({"type": "status", "content": "Finalizing answer..."})
-            clean_response = re.sub(r"(Thought|Action|Action Input):.*", "", llm_response, flags=re.MULTILINE).strip()
+                answer_part = "\n".join(clean_lines).strip()
+                
+                # 3. Last fallback: if the cleaned answer is empty, use the Thought text
+                if not answer_part:
+                    if thought_match:
+                        answer_part = thought_match.group(1).strip()
+                    else:
+                        answer_part = llm_response.strip()
             
-            # Stream response
-            words = clean_response.split(" ")
+            # Stream the final answer token-by-token
+            words = answer_part.split(" ")
             for i, word in enumerate(words):
                 space = " " if i > 0 else ""
                 await websocket.send_json({"type": "token", "content": space + word})
                 await asyncio.sleep(0.02)
                 
-            return clean_response
+            return answer_part
             
     # Timeout response
     error_msg = "Agent could not resolve an answer within the maximum number of steps."

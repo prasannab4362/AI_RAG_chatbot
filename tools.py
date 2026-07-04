@@ -127,13 +127,13 @@ def web_search(query: str) -> str:
     elif "prasanna" in query_lower or "linkedin.com/in/prasannabalaji" in query_lower:
         print("[Tool: Web Search] Local Fallback Activated: Prasanna Balaji LinkedIn Profile")
         return MOCK_SEARCH_DATA["prasanna"]
-    elif "job" in query_lower or "opening" in query_lower or "developer" in query_lower:
+    elif ("job" in query_lower or "opening" in query_lower) and ("python" in query_lower or "developer" in query_lower):
         print("[Tool: Web Search] Local Fallback Activated: Python Job Openings")
         return MOCK_SEARCH_DATA["jobs"]
-    elif "sports" in query_lower or "football" in query_lower or "match" in query_lower or "manchester" in query_lower or "liverpool" in query_lower:
+    elif ("manchester" in query_lower or "liverpool" in query_lower or "man united" in query_lower or "old trafford" in query_lower) and ("sports" in query_lower or "match" in query_lower or "prediction" in query_lower or "schedule" in query_lower or "today" in query_lower):
         print("[Tool: Web Search] Local Fallback Activated: Sports Match History")
         return MOCK_SEARCH_DATA["sports"]
-    elif "news" in query_lower:
+    elif "news" in query_lower and "coimbatore" in query_lower:
         print("[Tool: Web Search] Local Fallback Activated: Coimbatore News")
         return MOCK_SEARCH_DATA["news"]
         
