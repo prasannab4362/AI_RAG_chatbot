@@ -4,7 +4,7 @@ import requests
 import asyncio
 from tools import web_search, write_file, search_documents
 
-# The prompt template that teaches the Local LLM how to use tools
+# The prompt template that teaches the Local LLM how to use tools and when to chat normally
 SYSTEM_PROMPT = """You are a helpful AI assistant with tool-use capabilities.
 You are running on a local LLM and can interact with the system and web via tools.
 
@@ -16,6 +16,11 @@ You have access to the following tools:
 3. write_file: Creates a new text file or resume inside the 'output' directory.
    Input: A JSON object with exactly two keys: "filename" (string) and "content" (string).
 
+--- CONVERSATION GUIDELINES ---
+- If the user's query is standard conversation (e.g., greetings like "hi", "hello", "how are you", or general chitchat), do NOT use the Thought/Action/Observation format. Just respond immediately, naturally, and helpfully as a friendly AI assistant.
+- Only use the Thought/Action/Observation format below if you need to use a tool to solve the query.
+
+--- TOOL CALLING FORMAT ---
 To use a tool, you MUST output your response in this format:
 Thought: [Describe your reasoning about what tool to call next]
 Action: [tool_name]
@@ -34,11 +39,6 @@ Action Input: {"filename": "resume.md", "content": "# Resume\\n- Name: John Doe"
 Once you have gathered all information and have the final answer, output:
 Thought: I have the final answer.
 Answer: [Your complete final response to the user. Explain clearly what you did.]
-
-Remember:
-- Only output ONE Thought and ONE Action at a time.
-- Stop generating and wait for the tool's Observation.
-- Do not output both Action and Answer at the same time.
 """
 
 def parse_action_input(tool_name: str, input_str: str):
@@ -136,6 +136,13 @@ async def run_agent(query: str, chat_history: list, websocket, model_name: str =
         if action_match and action_input_match:
             tool_name = action_match.group(1).strip()
             tool_input_raw = action_input_match.group(1).strip()
+            
+            # Handle case where model outputs Action: None / Action: null
+            if tool_name.lower() in ["none", "null", "no_tool", "notool"]:
+                print(f"[Agent] Model selected '{tool_name}' (No action). Prompting for final Answer.")
+                agent_messages.append({"role": "assistant", "content": llm_response})
+                agent_messages.append({"role": "user", "content": "Observation: You selected no action. Please provide your final response to the user using the 'Answer:' prefix."})
+                continue
             
             # Update user interface with Tool status
             await websocket.send_json({
