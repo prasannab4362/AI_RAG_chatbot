@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agentic RAG Chatbot</title>
+    <!-- Premium Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Plus+Jakarta+Sans:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <i class="fa-solid fa-brain-circuit glow-icon"></i>
+                    <h2>Agentic RAG</h2>
+                </div>
+                <span class="sub-logo">Local LLM Chatbot</span>
+            </div>
+
+            <!-- Model Configurations -->
+            <div class="section panel">
+                <h3><i class="fa-solid fa-sliders"></i> Model Settings</h3>
+                <div class="form-group">
+                    <label for="model-select">Ollama Model</label>
+                    <select id="model-select">
+                        <option value="llama3">llama3</option>
+                        <option value="llama3.1">llama3.1</option>
+                        <option value="qwen2.5-coder:7b">qwen2.5-coder:7b</option>
+                        <option value="mistral">mistral</option>
+                        <option value="custom">-- Custom Model --</option>
+                    </select>
+                </div>
+                <div class="form-group hidden" id="custom-model-group">
+                    <label for="custom-model-input">Custom Model Name</label>
+                    <input type="text" id="custom-model-input" placeholder="e.g. gemma2:9b">
+                </div>
+            </div>
+
+            <!-- Upload Area -->
+            <div class="section panel upload-section">
+                <h3><i class="fa-solid fa-cloud-arrow-up"></i> Ingest Knowledge</h3>
+                <div class="upload-drag-area" id="drag-area">
+                    <i class="fa-solid fa-file-pdf upload-icon"></i>
+                    <p>Drag & Drop files here</p>
+                    <span>Supports PDF, TXT, MD</span>
+                    <button class="btn btn-secondary btn-sm" onclick="document.getElementById('file-input').click()">
+                        Browse Files
+                    </button>
+                    <input type="file" id="file-input" accept=".txt,.md,.pdf" style="display: none;">
+                </div>
+                <div id="upload-status" class="status-msg"></div>
+            </div>
+
+            <!-- File List -->
+            <div class="section files-section">
+                <h3><i class="fa-solid fa-folder-open"></i> Uploaded Documents</h3>
+                <ul class="file-list" id="uploaded-files-list">
+                    <li class="empty-list">No documents uploaded yet.</li>
+                </ul>
+            </div>
+            
+            <div class="sidebar-footer">
+                <p>Output files saved to <code>/output</code></p>
+            </div>
+        </aside>
+
+        <!-- Main Chat Area -->
+        <main class="chat-area">
+            <header class="chat-header">
+                <div class="header-info">
+                    <div class="connection-status" id="ws-status">
+                        <span class="status-dot disconnected"></span>
+                        <span class="status-text">Disconnected</span>
+                    </div>
+                </div>
+                <button class="btn btn-secondary btn-sm" id="btn-clear-chat">
+                    <i class="fa-solid fa-trash-can"></i> Clear Chat
+                </button>
+            </header>
+
+            <!-- Agent Thinking / Status Console -->
+            <div class="agent-console hidden" id="agent-console">
+                <div class="console-header">
+                    <span><i class="fa-solid fa-terminal"></i> Agent Execution Log</span>
+                    <span class="console-spinner"><i class="fa-solid fa-circle-notch fa-spin"></i></span>
+                </div>
+                <div class="console-body" id="console-logs">
+                    <!-- Tool and Thought messages go here -->
+                </div>
+            </div>
+
+            <!-- Messages Window -->
+            <div class="messages-container" id="chat-messages">
+                <div class="message bot-message">
+                    <div class="avatar"><i class="fa-solid fa-robot"></i></div>
+                    <div class="message-content">
+                        Hi! I am your local Agentic RAG Chatbot. 
+                        <br><br>
+                        You can:
+                        <ul>
+                            <li>Upload PDFs or text documents in the sidebar to search them.</li>
+                            <li>Ask me live questions like the weather, today's news, or job listings (I'll automatically search the web!).</li>
+                            <li>Ask me to write a resume or report (I'll create the file directly in your workspace).</li>
+                        </ul>
+                        What can I help you with today?
+                    </div>
+                </div>
+            </div>
+
+            <!-- Input Form -->
+            <footer class="chat-footer">
+                <form id="chat-form" class="chat-input-form">
+                    <textarea 
+                        id="chat-input" 
+                        placeholder="Ask me anything... (Press Enter to send, Shift+Enter for new line)"
+                        rows="1"
+                        required
+                    ></textarea>
+                    <button type="submit" class="btn btn-primary" id="btn-send">
+                        <i class="fa-solid fa-paper-plane"></i>
+                    </button>
+                </form>
+            </footer>
+        </main>
+    </div>
+</body>
+</html>
