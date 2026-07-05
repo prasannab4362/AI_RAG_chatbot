@@ -276,7 +276,12 @@ async def web_search(query: str) -> str:
         print(f"[Tool: Web Search] Created {len(chunks)} total chunks from crawled pages.")
         
         if not chunks:
-            return "No content could be extracted or filtered from the crawled pages."
+            print("[Tool: Web Search] Crawled pages yielded 0 chunks. Falling back to search snippets...")
+            output_fallback = []
+            output_fallback.append("=== WEB SEARCH RESULT SNIPPETS (CRAWL FALLBACK) ===")
+            for idx, res in enumerate(search_results[:5], 1):
+                output_fallback.append(f"Result #{idx} | Source: {res['title']} ({res['url']}):\n{res['snippet']}\n")
+            return "\n".join(output_fallback)
             
         # 8. Temporary Vector/Keyword RAG Indexing
         print("[Tool: Web Search] Generating query embedding...")
