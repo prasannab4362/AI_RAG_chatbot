@@ -143,8 +143,9 @@ def check_robots_txt(urls):
 
 # --- TOOL 1: Web Search ---
 async def web_search(query: str) -> str:
-    """Searches the web using DuckDuckGo, checks robots.txt, crawls via Crawl4AI (with BM25 filter), 
-    chunks, embeds, and indexes into a temporary in-memory database to query top 5 results."""
+    """Searches the web using DuckDuckGo (falling back to Yahoo), checks robots.txt, 
+    crawls allowed pages using Crawl4AI (with BM25 query filter), chunks, and embeds 
+    content into a temporary in-memory database to query top 5 results."""
     print(f"[Tool: Web Search] Querying: {query}")
     
     # 1. Local Fallback Database checks to ensure instant classroom success
@@ -165,7 +166,11 @@ async def web_search(query: str) -> str:
         print("[Tool: Web Search] Local Fallback Activated: Coimbatore News")
         return MOCK_SEARCH_DATA["news"]
         
-    # 2. Proceed to live DuckDuckGo Search + Crawl4AI + temporary Vector Indexing
+    # 2. Retrieve search results (try DuckDuckGo first, fallback to Yahoo)
+    search_results = []
+    ddg_success = False
+    ddg_res = []
+    
     try:
         discard_urls = ["youtube.com", "britannica.com", "vimeo.com"]
         search_query = query
@@ -173,38 +178,72 @@ async def web_search(query: str) -> str:
             search_query += f" -site:{d_url}"
             
         print(f"[Tool: Web Search] DDGS search query: {search_query}")
-        results = []
         with DDGS() as ddgs:
-            # Fetch up to 8 results to ensure we have enough after robots.txt filtering
             ddg_res = list(ddgs.text(search_query, max_results=8))
-            
-        if not ddg_res:
-            print("[Tool: Web Search] DuckDuckGo returned no results. Trying Yahoo fallback...")
-            raise Exception("DuckDuckGo returned no results")
-            
-        # Parse search results
-        urls = []
-        snippets_map = {}
+        if ddg_res:
+            ddg_success = True
+            print("[Tool: Web Search] DuckDuckGo search successful.")
+    except Exception as ddg_err:
+        print(f"[Tool: Web Search] DuckDuckGo search failed: {ddg_err}")
+        
+    if ddg_success:
         for r in ddg_res:
             url = r.get("href") or r.get("link")
             if url:
-                urls.append(url)
-                snippets_map[url] = {
+                search_results.append({
+                    "url": url,
                     "title": r.get("title", ""),
                     "snippet": r.get("body") or r.get("snippet") or ""
-                }
-                
-        # 3. Robots.txt ethical filtering
-        print(f"[Tool: Web Search] Filtering {len(urls)} URLs using robots.txt...")
-        allowed_urls = check_robots_txt(urls)
-        # Limit to top 3 allowed URLs to crawl to keep it fast
-        allowed_urls = allowed_urls[:3]
-        print(f"[Tool: Web Search] Allowed and selected URLs to crawl: {allowed_urls}")
+                })
+    else:
+        print("[Tool: Web Search] Attempting Yahoo search scraper fallback...")
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        encoded_query = urllib.parse.quote(query)
+        url = f"https://search.yahoo.com/search?q={encoded_query}"
         
-        if not allowed_urls:
-            return "Web search completed, but all retrieved URLs were disallowed by robots.txt."
+        try:
+            response = requests.get(url, headers=headers, timeout=10)
+            if response.status_code == 200:
+                parser = YahooParser()
+                parser.feed(response.text)
+                if parser.current_result:
+                    parser.finalize_current()
+                
+                for r in parser.results[:8]:
+                    if r.get("link"):
+                        search_results.append({
+                            "url": r["link"],
+                            "title": r.get("title", ""),
+                            "snippet": r.get("snippet", "")
+                        })
+                print(f"[Tool: Web Search] Yahoo search returned {len(search_results)} results.")
+        except Exception as yahoo_err:
+            print(f"[Tool: Web Search] Yahoo search fallback also failed: {yahoo_err}")
             
-        # 4. Scrape content using Crawl4AI arun_many
+    if not search_results:
+        return (
+            f"Simulated search result for: '{query}'\n"
+            f"This is a fallback result since both DuckDuckGo and Yahoo search endpoints failed or were rate-limited. "
+            f"In a production environment, this would query live pages."
+        )
+        
+    # 3. Robots.txt ethical filtering
+    urls = [r["url"] for r in search_results]
+    snippets_map = {r["url"]: r for r in search_results}
+    
+    print(f"[Tool: Web Search] Filtering {len(urls)} URLs using robots.txt...")
+    allowed_urls = check_robots_txt(urls)
+    # Limit to top 3 allowed URLs to crawl to keep it fast
+    allowed_urls = allowed_urls[:3]
+    print(f"[Tool: Web Search] Allowed and selected URLs to crawl: {allowed_urls}")
+    
+    if not allowed_urls:
+        return "Web search completed, but all retrieved URLs were disallowed by robots.txt rules."
+        
+    # 4. Scrape content using Crawl4AI arun_many
+    try:
         print(f"[Tool: Web Search] Crawling {len(allowed_urls)} pages with Crawl4AI...")
         
         bm25_filter = BM25ContentFilter(user_query=query, bm25_threshold=1.2)
@@ -237,7 +276,6 @@ async def web_search(query: str) -> str:
                     content = res.markdown
             
             if not content:
-                # Fallback if markdown field is empty
                 url = res.url
                 snippet_info = snippets_map.get(url, {})
                 content = snippet_info.get("snippet", "")
@@ -305,40 +343,14 @@ async def web_search(query: str) -> str:
             
         return "\n".join(output_context)
         
-    except Exception as e:
-        print(f"[Tool: Web Search] Live search failed: {str(e)}. Using Yahoo scraper fallback...")
-        
-        # 3. Fallback to Yahoo scraper
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
-        encoded_query = urllib.parse.quote(query)
-        url = f"https://search.yahoo.com/search?q={encoded_query}"
-        
-        try:
-            response = requests.get(url, headers=headers, timeout=10)
-            if response.status_code == 200:
-                parser = YahooParser()
-                parser.feed(response.text)
-                if parser.current_result:
-                    parser.finalize_current()
-                    
-                results = parser.results[:5]  # Limit to top 5 results
-                if results:
-                    output = []
-                    output.append("=== YAHOO SEARCH RESULTS (FALLBACK) ===")
-                    for idx, res in enumerate(results, 1):
-                        output.append(f"Result #{idx}:\nTitle: {res['title']}\nURL: {res['link']}\nSummary: {res['snippet']}\n")
-                    return "\n".join(output)
-            
-            print("[Tool: Web Search] Yahoo scraper returned non-200 or empty.")
-            return (
-                f"Simulated search result for: '{query}'\n"
-                f"This is a fallback result since both DuckDuckGo and Yahoo searches were blocked or rate-limited. "
-                f"In a production environment, this would return live results."
-            )
-        except Exception as fallback_err:
-            return f"Error executing search: {str(fallback_err)}"
+    except Exception as crawl_err:
+        print(f"[Tool: Web Search] Crawl4AI execution error: {crawl_err}")
+        # Fall back to using search engine snippet summaries directly
+        output_fallback = []
+        output_fallback.append("=== WEB SEARCH RESULT SNIPPETS (CRAWL FALLBACK) ===")
+        for idx, res in enumerate(search_results[:5], 1):
+            output_fallback.append(f"Result #{idx} | Source: {res['title']} ({res['url']}):\n{res['snippet']}\n")
+        return "\n".join(output_fallback)
 
 # --- TOOL 2: File Writer (for Resumes, Reports, etc.) ---
 def write_file(filename: str, content: str) -> str:
