@@ -5,16 +5,26 @@ import asyncio
 from tools import web_search, write_file, search_documents
 
 # The prompt template that teaches the Local LLM how to use tools and when to chat normally
-SYSTEM_PROMPT = """You are a helpful AI assistant with tool-use capabilities.
-You are running on a local LLM and can interact with the system and web via tools.
+def get_system_prompt(web_search_enabled: bool) -> str:
+    tools_list = []
+    tool_idx = 1
+    
+    if web_search_enabled:
+        tools_list.append(f"{tool_idx}. web_search: Searches the web for live info (weather, news, sports, or general queries).\n   Input: a search query string.")
+        tool_idx += 1
+        
+    tools_list.append(f"{tool_idx}. search_documents: Searches the database of uploaded files (PDFs, TXT, MD) to retrieve context.\n   Input: a search query string.")
+    tool_idx += 1
+    
+    tools_list.append(f"{tool_idx}. write_file: Creates a new text file or resume inside the 'output' directory.\n   Input: A JSON object with exactly two keys: \"filename\" (string) and \"content\" (string).")
+    
+    tools_str = "\n".join(tools_list)
+    
+    return f"""You are a helpful AI assistant with tool-use capabilities.
+You are running on a local LLM and can interact with the system via tools.
 
 You have access to the following tools:
-1. web_search: Searches the web for live info (weather, news, sports, or job openings on LinkedIn, Naukri, Indeed).
-   Input: a search query string.
-2. search_documents: Searches the database of uploaded files (PDFs, TXT, MD) to retrieve context.
-   Input: a search query string.
-3. write_file: Creates a new text file or resume inside the 'output' directory.
-   Input: A JSON object with exactly two keys: "filename" (string) and "content" (string).
+{tools_str}
 
 --- CONVERSATION GUIDELINES ---
 - If the user's query is standard conversation (e.g., greetings like "hi", "hello", "how are you", or general chitchat), do NOT use the Thought/Action/Observation format. Just respond immediately, naturally, and helpfully as a friendly AI assistant.
@@ -34,7 +44,7 @@ Action Input: weather in Coimbatore today
 Example of writing a file:
 Thought: I need to save the resume.
 Action: write_file
-Action Input: {"filename": "resume.md", "content": "# Resume\\n- Name: John Doe"}
+Action Input: {{"filename": "resume.md", "content": "# Resume\\n- Name: John Doe"}}
 
 Once you have gathered all information and have the final answer, output:
 Thought: I have the final answer.
@@ -89,14 +99,14 @@ async def call_local_chat_llm(messages: list, model_name: str) -> str:
     except Exception as e:
         return f"Error connecting to local LLM: {str(e)}. Make sure Ollama is running (`ollama serve`)."
 
-async def run_agent(query: str, chat_history: list, websocket, model_name: str = "llama3"):
+async def run_agent(query: str, chat_history: list, websocket, model_name: str = "llama3", web_search_enabled: bool = False):
     """
     Runs the ReAct loop using the chat API. Sends status updates and streaming final answer 
     tokens over the WebSocket connection.
     """
     # 1. Start with system prompt
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT}
+        {"role": "system", "content": get_system_prompt(web_search_enabled)}
     ]
     
     # 2. Append conversation history (from previous turns)
@@ -153,8 +163,11 @@ async def run_agent(query: str, chat_history: list, websocket, model_name: str =
             # Execute the appropriate tool
             observation = ""
             if tool_name == "web_search":
-                search_query = parse_action_input(tool_name, tool_input_raw)
-                observation = web_search(search_query)
+                if not web_search_enabled:
+                    observation = "Error: Web search is currently disabled. Please enable it in the UI to search the web."
+                else:
+                    search_query = parse_action_input(tool_name, tool_input_raw)
+                    observation = await web_search(search_query)
             elif tool_name == "search_documents":
                 doc_query = parse_action_input(tool_name, tool_input_raw)
                 observation = search_documents(doc_query)
