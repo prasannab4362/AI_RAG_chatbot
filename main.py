@@ -74,14 +74,15 @@ async def websocket_chat_endpoint(websocket: WebSocket):
             user_query = data.get("query", "")
             chat_history = data.get("history", [])
             model_name = data.get("model", "llama3")  # Default to llama3 or qwen2.5-coder
+            web_search_enabled = data.get("web_search_enabled", False)
             
             if not user_query:
                 continue
                 
-            print(f"[WebSocket] User Query: {user_query} | Model: {model_name}")
+            print(f"[WebSocket] User Query: {user_query} | Model: {model_name} | Web Search: {web_search_enabled}")
             
             # Run our ReAct Agent loop, sending tokens and statuses via WebSocket
-            await run_agent(user_query, chat_history, websocket, model_name=model_name)
+            await run_agent(user_query, chat_history, websocket, model_name=model_name, web_search_enabled=web_search_enabled)
             
             # Send close signal for this response
             await websocket.send_json({"type": "done"})
