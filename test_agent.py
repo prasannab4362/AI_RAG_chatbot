@@ -38,7 +38,7 @@ async def test_all():
             query="Find the LinkedIn profile of www.linkedin.com/in/prasannabalaji18 and write a tailored resume to prasanna_resume.md",
             chat_history=history,
             websocket=mock_ws,
-            model_name="qwen2.5:7b",
+            model_name="qwen3.5:9b",
             web_search_enabled=True
         )
         print("\n\n--- LinkedIn Test Completed ---")
@@ -64,7 +64,7 @@ async def test_all():
             query="What is the schedule of Manchester United vs Liverpool today? Look up match results from 3 years ago, 5 years ago, and make a prediction for today.",
             chat_history=history,
             websocket=mock_ws,
-            model_name="qwen2.5:7b",
+            model_name="qwen3.5:9b",
             web_search_enabled=True
         )
         print("\n\n--- Sports Test Completed ---")
