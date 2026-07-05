@@ -3,6 +3,8 @@ import re
 import urllib.parse
 import requests
 from html.parser import HTMLParser
+from duckduckgo_search import DDGS
+from crawl4ai import AsyncWebCrawler
 
 # 1. Custom Yahoo Search HTML Parser (No APIs/Keys required, CAPTCHA-free)
 class YahooParser(HTMLParser):
@@ -115,8 +117,8 @@ MOCK_SEARCH_DATA = {
 }
 
 # --- TOOL 1: Web Search ---
-def web_search(query: str) -> str:
-    """Searches Yahoo Search with a robust local fallback for key demo queries."""
+async def web_search(query: str) -> str:
+    """Searches the web using DuckDuckGo and crawls the top result using Crawl4AI."""
     print(f"[Tool: Web Search] Querying: {query}")
     
     # 1. Local Fallback Database checks to ensure instant classroom success
@@ -137,37 +139,81 @@ def web_search(query: str) -> str:
         print("[Tool: Web Search] Local Fallback Activated: Coimbatore News")
         return MOCK_SEARCH_DATA["news"]
         
-    # 2. Proceed to live Yahoo Search scraping if query doesn't match fallbacks
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
-    encoded_query = urllib.parse.quote(query)
-    url = f"https://search.yahoo.com/search?q={encoded_query}"
-    
+    # 2. Proceed to live DuckDuckGo Search + Crawl4AI scraping
     try:
-        response = requests.get(url, headers=headers, timeout=10)
-        if response.status_code == 200:
-            parser = YahooParser()
-            parser.feed(response.text)
-            if parser.current_result:
-                parser.finalize_current()
+        results = []
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=5))
+            
+        if not results:
+            print("[Tool: Web Search] DuckDuckGo returned no results. Trying Yahoo fallback...")
+            raise Exception("DuckDuckGo returned no results")
+            
+        output = []
+        output.append("=== DUCKDUCKGO SEARCH RESULTS ===")
+        for idx, res in enumerate(results, 1):
+            title = res.get("title", "")
+            link = res.get("href") or res.get("link") or ""
+            snippet = res.get("body") or res.get("snippet") or ""
+            output.append(f"Result #{idx}:\nTitle: {title}\nURL: {link}\nSummary: {snippet}\n")
+            
+        # Try to crawl the top URL using Crawl4AI
+        top_url = results[0].get("href") or results[0].get("link")
+        if top_url:
+            print(f"[Tool: Web Search] Crawling top URL: {top_url} using Crawl4AI...")
+            try:
+                async with AsyncWebCrawler() as crawler:
+                    crawl_result = await crawler.arun(url=top_url)
+                    if crawl_result and crawl_result.markdown:
+                        scraped_md = crawl_result.markdown.strip()
+                        # Limit to first 4000 characters to prevent context window bloat
+                        if len(scraped_md) > 4000:
+                            scraped_md = scraped_md[:4000] + "\n\n[Content truncated for length]"
+                        output.append("=== DEEP CRAWLED CONTENT OF TOP RESULT ===")
+                        output.append(f"URL: {top_url}")
+                        output.append(scraped_md)
+                    else:
+                        print("[Tool: Web Search] Crawl4AI returned empty content.")
+            except Exception as crawl_err:
+                print(f"[Tool: Web Search] Crawl4AI error: {crawl_err}")
+                output.append(f"\n[Notice: Failed to crawl the top result using Crawl4AI. Error: {str(crawl_err)}]")
                 
-            results = parser.results[:5]  # Limit to top 5 results
-            if results:
-                output = []
-                for idx, res in enumerate(results, 1):
-                    output.append(f"Result #{idx}:\nTitle: {res['title']}\nURL: {res['link']}\nSummary: {res['snippet']}\n")
-                return "\n".join(output)
-                
-        # 3. Graceful fallback if scraping was rate-limited or blocked
-        print("[Tool: Web Search] Yahoo scraper returned non-200 or empty. Returning generic simulation.")
-        return (
-            f"Simulated search result for: '{query}'\n"
-            f"This is a fallback result since the live search scraper was blocked or rate-limited by the server. "
-            f"In a production deployment, this would return live results for '{query}'."
-        )
+        return "\n".join(output)
+        
     except Exception as e:
-        return f"Error executing search: {str(e)}"
+        print(f"[Tool: Web Search] Live search failed: {str(e)}. Using Yahoo scraper fallback...")
+        
+        # 3. Fallback to Yahoo scraper
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        encoded_query = urllib.parse.quote(query)
+        url = f"https://search.yahoo.com/search?q={encoded_query}"
+        
+        try:
+            response = requests.get(url, headers=headers, timeout=10)
+            if response.status_code == 200:
+                parser = YahooParser()
+                parser.feed(response.text)
+                if parser.current_result:
+                    parser.finalize_current()
+                    
+                results = parser.results[:5]  # Limit to top 5 results
+                if results:
+                    output = []
+                    output.append("=== YAHOO SEARCH RESULTS (FALLBACK) ===")
+                    for idx, res in enumerate(results, 1):
+                        output.append(f"Result #{idx}:\nTitle: {res['title']}\nURL: {res['link']}\nSummary: {res['snippet']}\n")
+                    return "\n".join(output)
+            
+            print("[Tool: Web Search] Yahoo scraper returned non-200 or empty.")
+            return (
+                f"Simulated search result for: '{query}'\n"
+                f"This is a fallback result since both DuckDuckGo and Yahoo searches were blocked or rate-limited. "
+                f"In a production environment, this would return live results."
+            )
+        except Exception as fallback_err:
+            return f"Error executing search: {str(fallback_err)}"
 
 # --- TOOL 2: File Writer (for Resumes, Reports, etc.) ---
 def write_file(filename: str, content: str) -> str:
