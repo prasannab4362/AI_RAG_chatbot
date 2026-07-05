@@ -141,8 +141,16 @@ async def run_agent(query: str, chat_history: list, websocket, model_name: str =
         
         # Check if the LLM chose to call a Tool
         action_match = re.search(r"Action:\s*(\w+)", llm_response)
-        action_input_match = re.search(r"Action Input:\s*(.*)", llm_response, re.DOTALL)
         
+        # Clean regex lookahead to avoid capturing subsequent thought/action steps in LLM hallucination loops
+        action_input_match = re.search(
+            r"Action Input:\s*(.*?)(?=\n\s*(?:Thought:|Action:|Observation:|Answer:|$))", 
+            llm_response, 
+            re.DOTALL
+        )
+        if not action_input_match:
+            action_input_match = re.search(r"Action Input:\s*(.*)", llm_response, re.DOTALL)
+            
         if action_match and action_input_match:
             tool_name = action_match.group(1).strip()
             tool_input_raw = action_input_match.group(1).strip()
@@ -150,7 +158,8 @@ async def run_agent(query: str, chat_history: list, websocket, model_name: str =
             # Handle case where model outputs Action: None / Action: null
             if tool_name.lower() in ["none", "null", "no_tool", "notool"]:
                 print(f"[Agent] Model selected '{tool_name}' (No action). Prompting for final Answer.")
-                agent_messages.append({"role": "assistant", "content": llm_response})
+                cleaned_assistant_msg = f"Thought: {thought_text}\nAction: None"
+                agent_messages.append({"role": "assistant", "content": cleaned_assistant_msg})
                 agent_messages.append({"role": "user", "content": "Observation: You selected no action. Please provide your final response to the user using the 'Answer:' prefix."})
                 continue
             
@@ -180,8 +189,9 @@ async def run_agent(query: str, chat_history: list, websocket, model_name: str =
             # Log observation in console
             print(f"--- Step {step} Tool Result ({tool_name}) ---\n{observation[:200]}...\n----------------------")
             
-            # Feed current step response and observation back to model
-            agent_messages.append({"role": "assistant", "content": llm_response})
+            # Feed cleaned step response and observation back to model
+            cleaned_assistant_msg = f"Thought: {thought_text}\nAction: {tool_name}\nAction Input: {tool_input_raw}"
+            agent_messages.append({"role": "assistant", "content": cleaned_assistant_msg})
             agent_messages.append({"role": "user", "content": f"Observation: {observation}"})
             
             await asyncio.sleep(0.5)  # Short delay for visual effect in UI
