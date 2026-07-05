@@ -3,8 +3,13 @@ import re
 import urllib.parse
 import requests
 from html.parser import HTMLParser
+from urllib.parse import urlparse
+from urllib.robotparser import RobotFileParser
 from duckduckgo_search import DDGS
-from crawl4ai import AsyncWebCrawler
+from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
+from crawl4ai.content_filter_strategy import BM25ContentFilter
+from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
+import numpy as np
 
 # 1. Custom Yahoo Search HTML Parser (No APIs/Keys required, CAPTCHA-free)
 class YahooParser(HTMLParser):
@@ -116,9 +121,30 @@ MOCK_SEARCH_DATA = {
     )
 }
 
+def check_robots_txt(urls):
+    """Filter URLs based on their robots.txt rules."""
+    allowed_urls = []
+    for url in urls:
+        try:
+            parsed = urlparse(url)
+            robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
+            rp = RobotFileParser()
+            rp.set_url(robots_url)
+            rp.read()
+            if rp.can_fetch("*", url):
+                allowed_urls.append(url)
+            else:
+                print(f"[Robots.txt] Disallowed: {url}")
+        except Exception as e:
+            # Assume allowed if robots.txt is missing or errors out
+            print(f"[Robots.txt] Error checking {url}, assuming allowed: {e}")
+            allowed_urls.append(url)
+    return allowed_urls
+
 # --- TOOL 1: Web Search ---
 async def web_search(query: str) -> str:
-    """Searches the web using DuckDuckGo and crawls the top result using Crawl4AI."""
+    """Searches the web using DuckDuckGo, checks robots.txt, crawls via Crawl4AI (with BM25 filter), 
+    chunks, embeds, and indexes into a temporary in-memory database to query top 5 results."""
     print(f"[Tool: Web Search] Querying: {query}")
     
     # 1. Local Fallback Database checks to ensure instant classroom success
@@ -139,46 +165,145 @@ async def web_search(query: str) -> str:
         print("[Tool: Web Search] Local Fallback Activated: Coimbatore News")
         return MOCK_SEARCH_DATA["news"]
         
-    # 2. Proceed to live DuckDuckGo Search + Crawl4AI scraping
+    # 2. Proceed to live DuckDuckGo Search + Crawl4AI + temporary Vector Indexing
     try:
+        discard_urls = ["youtube.com", "britannica.com", "vimeo.com"]
+        search_query = query
+        for d_url in discard_urls:
+            search_query += f" -site:{d_url}"
+            
+        print(f"[Tool: Web Search] DDGS search query: {search_query}")
         results = []
         with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=5))
+            # Fetch up to 8 results to ensure we have enough after robots.txt filtering
+            ddg_res = list(ddgs.text(search_query, max_results=8))
             
-        if not results:
+        if not ddg_res:
             print("[Tool: Web Search] DuckDuckGo returned no results. Trying Yahoo fallback...")
             raise Exception("DuckDuckGo returned no results")
             
-        output = []
-        output.append("=== DUCKDUCKGO SEARCH RESULTS ===")
-        for idx, res in enumerate(results, 1):
-            title = res.get("title", "")
-            link = res.get("href") or res.get("link") or ""
-            snippet = res.get("body") or res.get("snippet") or ""
-            output.append(f"Result #{idx}:\nTitle: {title}\nURL: {link}\nSummary: {snippet}\n")
-            
-        # Try to crawl the top URL using Crawl4AI
-        top_url = results[0].get("href") or results[0].get("link")
-        if top_url:
-            print(f"[Tool: Web Search] Crawling top URL: {top_url} using Crawl4AI...")
-            try:
-                async with AsyncWebCrawler() as crawler:
-                    crawl_result = await crawler.arun(url=top_url)
-                    if crawl_result and crawl_result.markdown:
-                        scraped_md = crawl_result.markdown.strip()
-                        # Limit to first 4000 characters to prevent context window bloat
-                        if len(scraped_md) > 4000:
-                            scraped_md = scraped_md[:4000] + "\n\n[Content truncated for length]"
-                        output.append("=== DEEP CRAWLED CONTENT OF TOP RESULT ===")
-                        output.append(f"URL: {top_url}")
-                        output.append(scraped_md)
-                    else:
-                        print("[Tool: Web Search] Crawl4AI returned empty content.")
-            except Exception as crawl_err:
-                print(f"[Tool: Web Search] Crawl4AI error: {crawl_err}")
-                output.append(f"\n[Notice: Failed to crawl the top result using Crawl4AI. Error: {str(crawl_err)}]")
+        # Parse search results
+        urls = []
+        snippets_map = {}
+        for r in ddg_res:
+            url = r.get("href") or r.get("link")
+            if url:
+                urls.append(url)
+                snippets_map[url] = {
+                    "title": r.get("title", ""),
+                    "snippet": r.get("body") or r.get("snippet") or ""
+                }
                 
-        return "\n".join(output)
+        # 3. Robots.txt ethical filtering
+        print(f"[Tool: Web Search] Filtering {len(urls)} URLs using robots.txt...")
+        allowed_urls = check_robots_txt(urls)
+        # Limit to top 3 allowed URLs to crawl to keep it fast
+        allowed_urls = allowed_urls[:3]
+        print(f"[Tool: Web Search] Allowed and selected URLs to crawl: {allowed_urls}")
+        
+        if not allowed_urls:
+            return "Web search completed, but all retrieved URLs were disallowed by robots.txt."
+            
+        # 4. Scrape content using Crawl4AI arun_many
+        print(f"[Tool: Web Search] Crawling {len(allowed_urls)} pages with Crawl4AI...")
+        
+        bm25_filter = BM25ContentFilter(user_query=query, bm25_threshold=1.2)
+        md_generator = DefaultMarkdownGenerator(content_filter=bm25_filter)
+        
+        crawler_cfg = CrawlerRunConfig(
+            markdown_generator=md_generator,
+            excluded_tags=["nav", "footer", "header"],
+            only_text=True,
+            cache_mode=CacheMode.BYPASS
+        )
+        browser_cfg = BrowserConfig(headless=True, text_mode=True, light_mode=True)
+        
+        crawl_results = []
+        async with AsyncWebCrawler(config=browser_cfg) as crawler:
+            crawl_results = await crawler.arun_many(urls=allowed_urls, config=crawler_cfg)
+            
+        # 5. Extract Markdown and chunk them
+        from rag_engine import chunk_text, get_ollama_embedding, keyword_search
+        
+        chunks = []
+        for res in crawl_results:
+            content = None
+            if hasattr(res, 'markdown_v2') and res.markdown_v2 and hasattr(res.markdown_v2, 'fit_markdown'):
+                content = res.markdown_v2.fit_markdown
+            elif hasattr(res, 'markdown') and res.markdown:
+                if hasattr(res.markdown, 'fit_markdown'):
+                    content = res.markdown.fit_markdown
+                else:
+                    content = res.markdown
+            
+            if not content:
+                # Fallback if markdown field is empty
+                url = res.url
+                snippet_info = snippets_map.get(url, {})
+                content = snippet_info.get("snippet", "")
+                
+            if content:
+                # Chunk text using 400 chunk size and 100 overlap as taught
+                file_chunks = chunk_text(content, chunk_size=400, overlap=100)
+                for chunk in file_chunks:
+                    chunks.append({
+                        "text": chunk,
+                        "source": res.url,
+                        "title": snippets_map.get(res.url, {}).get("title", "Web Page")
+                    })
+                    
+        print(f"[Tool: Web Search] Created {len(chunks)} total chunks from crawled pages.")
+        
+        if not chunks:
+            return "No content could be extracted or filtered from the crawled pages."
+            
+        # 6. Temporary Vector/Keyword RAG Indexing
+        print("[Tool: Web Search] Generating query embedding...")
+        query_vector = get_ollama_embedding(query)
+        
+        top_matches = []
+        if query_vector is not None:
+            print("[Tool: Web Search] Query embedding retrieved. Computing chunk embeddings...")
+            vector_chunks = []
+            for c in chunks:
+                emb = get_ollama_embedding(c["text"])
+                if emb is not None:
+                    c["embedding"] = emb
+                    vector_chunks.append(c)
+                    
+            if vector_chunks:
+                q_vec = np.array(query_vector)
+                q_norm = np.linalg.norm(q_vec)
+                
+                similarities = []
+                for chunk in vector_chunks:
+                    c_vec = np.array(chunk["embedding"])
+                    c_norm = np.linalg.norm(c_vec)
+                    if q_norm > 0 and c_norm > 0:
+                        sim = np.dot(q_vec, c_vec) / (q_norm * c_norm)
+                    else:
+                        sim = 0.0
+                    similarities.append((sim, chunk))
+                    
+                similarities.sort(key=lambda x: x[0], reverse=True)
+                top_matches = [item[1] for item in similarities[:5]]
+                print(f"[Tool: Web Search] Vector search retrieved {len(top_matches)} matches.")
+                
+        if not top_matches:
+            print("[Tool: Web Search] Vector search unavailable or returned no matches. Falling back to Keyword search...")
+            keyword_matches = keyword_search(query, chunks, top_k=5)
+            top_matches = keyword_matches
+            print(f"[Tool: Web Search] Keyword search retrieved {len(top_matches)} matches.")
+            
+        # 7. Assemble and return context
+        output_context = []
+        output_context.append("=== WEB RETRIEVED CONTEXT (TOP 5 RELEVANT CHUNKS) ===")
+        for idx, match in enumerate(top_matches, 1):
+            source = match.get("source", "Web Search")
+            title = match.get("title", "Web Page")
+            output_context.append(f"Chunk #{idx} | Source: {title} ({source}):\n{match['text']}\n")
+            
+        return "\n".join(output_context)
         
     except Exception as e:
         print(f"[Tool: Web Search] Live search failed: {str(e)}. Using Yahoo scraper fallback...")
