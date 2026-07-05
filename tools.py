@@ -2,7 +2,7 @@ import os
 import re
 import urllib.parse
 import requests
-from html.parser import HTMLParser
+from bs4 import BeautifulSoup
 from urllib.parse import urlparse
 from urllib.robotparser import RobotFileParser
 from duckduckgo_search import DDGS
@@ -11,68 +11,42 @@ from crawl4ai.content_filter_strategy import BM25ContentFilter
 from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
 import numpy as np
 
-# 1. Custom Yahoo Search HTML Parser (No APIs/Keys required, CAPTCHA-free)
-class YahooParser(HTMLParser):
-    def __init__(self):
-        super().__init__()
-        self.results = []
-        self.current_result = None
-        self.capture_type = None
-
-    def handle_starttag(self, tag, attrs):
-        attrs_dict = dict(attrs)
-        class_name = attrs_dict.get("class", "")
-        
-        # New result block
-        if tag == "div" and "algo" in class_name:
-            if self.current_result:
-                self.finalize_current()
-            self.current_result = {"title": "", "link": "", "snippet": ""}
+# 1. Custom Yahoo Search Parser using BeautifulSoup
+def parse_yahoo_results(html_text):
+    """Parses Yahoo Search HTML using BeautifulSoup and returns a list of results."""
+    results = []
+    try:
+        soup = BeautifulSoup(html_text, "html.parser")
+        # Yahoo search results are inside div.algo
+        for div in soup.find_all("div", class_=re.compile("algo")):
+            title_a = div.find("a")
+            snippet_div = div.find("div", class_=re.compile("compText|feed"))
             
-        if self.current_result:
-            # Yahoo titles are in a tags wrapping the title block
-            if tag == "a":
-                href = attrs_dict.get("href", "")
-                if href and not self.current_result["link"]:
-                    self.current_result["link"] = href
-                    self.capture_type = "title"
-            # Yahoo snippets are in compText divs
-            elif tag == "div" and "compText" in class_name:
-                self.capture_type = "snippet"
-
-    def handle_endtag(self, tag):
-        if self.current_result:
-            if tag == "a" and self.capture_type == "title":
-                self.capture_type = None
-            elif tag == "div" and self.capture_type == "snippet":
-                self.capture_type = None
-
-    def handle_data(self, data):
-        if self.current_result and self.capture_type:
-            if self.capture_type == "title":
-                self.current_result["title"] += data
-            elif self.capture_type == "snippet":
-                self.current_result["snippet"] += data
-
-    def finalize_current(self):
-        if self.current_result and (self.current_result["title"] or self.current_result["snippet"]):
-            # Decode link redirect
-            link = self.current_result["link"]
-            if "RU=" in link:
-                ru_match = re.search(r'/RU=([^/]+)', link)
-                if ru_match:
-                    link = urllib.parse.unquote(ru_match.group(1))
-            
-            # Clean up double space / HTML fragments in titles
-            cleaned_title = re.sub(r'\s+', ' ', self.current_result["title"]).strip()
-            cleaned_snippet = re.sub(r'\s+', ' ', self.current_result["snippet"]).strip()
-            
-            self.results.append({
-                "title": cleaned_title,
-                "link": link,
-                "snippet": cleaned_snippet
-            })
-        self.current_result = None
+            if title_a:
+                title = title_a.get_text(strip=True)
+                link = title_a.get("href", "")
+                
+                # Decode Yahoo redirect link
+                if "RU=" in link:
+                    ru_match = re.search(r'/RU=([^/]+)', link)
+                    if ru_match:
+                        link = urllib.parse.unquote(ru_match.group(1))
+                
+                snippet = snippet_div.get_text(strip=True) if snippet_div else ""
+                
+                # If it's a relative Yahoo internal link or redirect, bypass or clean it
+                if title and link and not link.startswith("https://search.yahoo.com/") and not link.startswith("https://video.search.yahoo.com/"):
+                    # Clean up double spaces in title and snippet
+                    cleaned_title = re.sub(r'\s+', ' ', title).strip()
+                    cleaned_snippet = re.sub(r'\s+', ' ', snippet).strip()
+                    results.append({
+                        "title": cleaned_title,
+                        "link": link,
+                        "snippet": cleaned_snippet
+                    })
+    except Exception as e:
+        print(f"[Yahoo Parser Error] {e}")
+    return results
 
 # --- LOCAL FALLBACK DATABASE (Ensures robust classroom demos) ---
 MOCK_SEARCH_DATA = {
@@ -167,30 +141,26 @@ async def web_search(query: str) -> str:
         return MOCK_SEARCH_DATA["news"]
         
     # 2. Retrieve search results (try DuckDuckGo first, fallback to Yahoo)
-    search_results = []
-    ddg_success = False
     ddg_res = []
+    ddg_success = False
     
     try:
-        discard_urls = ["youtube.com", "britannica.com", "vimeo.com"]
-        search_query = query
-        for d_url in discard_urls:
-            search_query += f" -site:{d_url}"
-            
-        print(f"[Tool: Web Search] DDGS search query: {search_query}")
+        # Keep query clean for DuckDuckGo to prevent rate limits or parsing errors
+        print(f"[Tool: Web Search] DDGS simple search query: {query}")
         with DDGS() as ddgs:
-            ddg_res = list(ddgs.text(search_query, max_results=8))
+            ddg_res = list(ddgs.text(query, max_results=8))
         if ddg_res:
             ddg_success = True
             print("[Tool: Web Search] DuckDuckGo search successful.")
     except Exception as ddg_err:
         print(f"[Tool: Web Search] DuckDuckGo search failed: {ddg_err}")
         
+    raw_results = []
     if ddg_success:
         for r in ddg_res:
             url = r.get("href") or r.get("link")
             if url:
-                search_results.append({
+                raw_results.append({
                     "url": url,
                     "title": r.get("title", ""),
                     "snippet": r.get("body") or r.get("snippet") or ""
@@ -206,30 +176,43 @@ async def web_search(query: str) -> str:
         try:
             response = requests.get(url, headers=headers, timeout=10)
             if response.status_code == 200:
-                parser = YahooParser()
-                parser.feed(response.text)
-                if parser.current_result:
-                    parser.finalize_current()
-                
-                for r in parser.results[:8]:
-                    if r.get("link"):
-                        search_results.append({
-                            "url": r["link"],
-                            "title": r.get("title", ""),
-                            "snippet": r.get("snippet", "")
-                        })
-                print(f"[Tool: Web Search] Yahoo search returned {len(search_results)} results.")
+                yahoo_res = parse_yahoo_results(response.text)
+                for r in yahoo_res:
+                    raw_results.append({
+                        "url": r["link"],
+                        "title": r["title"],
+                        "snippet": r["snippet"]
+                    })
+                print(f"[Tool: Web Search] Yahoo search returned {len(yahoo_res)} results.")
         except Exception as yahoo_err:
             print(f"[Tool: Web Search] Yahoo search fallback also failed: {yahoo_err}")
             
-    if not search_results:
+    if not raw_results:
         return (
             f"Simulated search result for: '{query}'\n"
             f"This is a fallback result since both DuckDuckGo and Yahoo search endpoints failed or were rate-limited. "
             f"In a production environment, this would query live pages."
         )
         
-    # 3. Robots.txt ethical filtering
+    # 4. Domain exclusion filter in Python
+    discard_urls = ["youtube.com", "britannica.com", "vimeo.com"]
+    search_results = []
+    for r in raw_results:
+        url = r["url"]
+        try:
+            parsed_url = urlparse(url)
+            domain = parsed_url.netloc.lower()
+            if any(dis in domain for dis in discard_urls):
+                print(f"[Exclude Filter] Excluded URL: {url}")
+                continue
+            search_results.append(r)
+        except Exception:
+            search_results.append(r)
+            
+    if not search_results:
+        return "Web search completed, but all search results were excluded by domain filters."
+        
+    # 5. Robots.txt ethical filtering
     urls = [r["url"] for r in search_results]
     snippets_map = {r["url"]: r for r in search_results}
     
@@ -242,7 +225,7 @@ async def web_search(query: str) -> str:
     if not allowed_urls:
         return "Web search completed, but all retrieved URLs were disallowed by robots.txt rules."
         
-    # 4. Scrape content using Crawl4AI arun_many
+    # 6. Scrape content using Crawl4AI arun_many
     try:
         print(f"[Tool: Web Search] Crawling {len(allowed_urls)} pages with Crawl4AI...")
         
@@ -261,7 +244,7 @@ async def web_search(query: str) -> str:
         async with AsyncWebCrawler(config=browser_cfg) as crawler:
             crawl_results = await crawler.arun_many(urls=allowed_urls, config=crawler_cfg)
             
-        # 5. Extract Markdown and chunk them
+        # 7. Extract Markdown and chunk them
         from rag_engine import chunk_text, get_ollama_embedding, keyword_search
         
         chunks = []
@@ -295,7 +278,7 @@ async def web_search(query: str) -> str:
         if not chunks:
             return "No content could be extracted or filtered from the crawled pages."
             
-        # 6. Temporary Vector/Keyword RAG Indexing
+        # 8. Temporary Vector/Keyword RAG Indexing
         print("[Tool: Web Search] Generating query embedding...")
         query_vector = get_ollama_embedding(query)
         
@@ -333,7 +316,7 @@ async def web_search(query: str) -> str:
             top_matches = keyword_matches
             print(f"[Tool: Web Search] Keyword search retrieved {len(top_matches)} matches.")
             
-        # 7. Assemble and return context
+        # 9. Assemble and return context
         output_context = []
         output_context.append("=== WEB RETRIEVED CONTEXT (TOP 5 RELEVANT CHUNKS) ===")
         for idx, match in enumerate(top_matches, 1):
