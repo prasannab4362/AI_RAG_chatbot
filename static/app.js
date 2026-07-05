@@ -19,6 +19,7 @@ const uploadStatus = document.getElementById("upload-status");
 const uploadedFilesList = document.getElementById("uploaded-files-list");
 const agentConsole = document.getElementById("agent-console");
 const consoleLogs = document.getElementById("console-logs");
+const webSearchToggle = document.getElementById("web-search-toggle");
 
 // --- WEBSOCKET CONNECTION ---
 function connectWebSocket() {
@@ -242,7 +243,8 @@ function sendMessage() {
     const payload = {
         query: query,
         model: model,
-        history: chatHistory
+        history: chatHistory,
+        web_search_enabled: webSearchToggle ? webSearchToggle.checked : false
     };
     
     // Send to FastAPI socket
