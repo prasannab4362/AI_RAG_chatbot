@@ -90,7 +90,7 @@ async def call_local_chat_llm(messages: list, model_name: str) -> str:
         loop = asyncio.get_event_loop()
         response = await loop.run_in_executor(
             None, 
-            lambda: requests.post(url, json=payload, timeout=45)
+            lambda: requests.post(url, json=payload, timeout=120)
         )
         if response.status_code == 200:
             return response.json().get("message", {}).get("content", "")
