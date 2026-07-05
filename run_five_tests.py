@@ -46,7 +46,8 @@ async def run_scenario(test_num, title, query):
             query=query,
             chat_history=history,
             websocket=ws,
-            model_name="qwen2.5:7b"
+            model_name="qwen2.5:7b",
+            web_search_enabled=True
         )
         print("\n\n--- Final Response ---")
         print(final_answer)
